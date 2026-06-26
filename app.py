@@ -97,16 +97,52 @@ def cargar_datos() -> pd.DataFrame:
             "con el nombre 'datos_despachos_almacen_2026.csv'."
         )
         st.stop()
-    df = pd.read_csv(ruta)
-    df.columns = [c.strip().lstrip("﻿") for c in df.columns]
-    num_cols = [
-        "MES", "VENTA_COP", "UNIDADES", "MARGEN_BRUTO_COP", "MARGEN_CONTRIB_COP",
-        "COSTO_MERCANCIA_COP", "FLETES_COP", "ARMADO_COP", "NUM_FACTURAS",
-        "PCT_DE_TIENDA_MES", "PCT_MARGEN_BRUTO", "PCT_MARGEN_CONTRIB",
-    ]
-    for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["MES_NOMBRE"] = df["MES"].map(MESES)
+    import snowflake.connector
+
+@st.cache_data(ttl=900)
+def cargar_datos():
+    conn = snowflake.connector.connect(
+        user=st.secrets["snowflake"]["user"],
+        password=st.secrets["snowflake"]["password"],
+        account=st.secrets["snowflake"]["account"],
+        warehouse=st.secrets["snowflake"]["warehouse"],
+        database=st.secrets["snowflake"]["database"],
+        role=st.secrets["snowflake"]["role"]
+    )
+    
+    query = """
+    SELECT 
+        b.DESCRIPCION AS ALMACEN_ORIGEN,
+        t.MES,
+        p.ESTADO_GRUPO AS CICLO_VIDA,
+        ac.LINEA,
+        ac.SUBLINEA,
+        ac.CATEGORIA,
+        SUM(f.VALOR_VENTA_OFERTA) AS VENTA_COP,
+        SUM(f.UNIDADES_VENDIDAS) AS UNIDADES,
+        SUM(f.MARGEN_BRUTO) AS MARGEN_BRUTO_COP,
+        SUM(f.CONTRIBUCION) AS MARGEN_CONTRIB_COP,
+        SUM(f.COSTO_MERC_VENDIDA) AS COSTO_MERCANCIA_COP,
+        SUM(f.FLETES) AS FLETES_COP,
+        SUM(f.ARMADO) AS ARMADO_COP,
+        COUNT(DISTINCT f.FACTURA) AS NUM_FACTURAS
+    FROM JM_SILVER_PRD_DB.JM_VENTAS_LEGACY.FACT_FACTURACION f
+    LEFT JOIN JM_SILVER_PRD_DB.JM_CORE_LEGACY.DIM_BODEGAS b 
+        ON f.CENTRO_LOGISTICO_ID = b.ID
+    LEFT JOIN JM_SILVER_PRD_DB.JM_CORE_LEGACY.DIM_UNIDAD_TIEMPO t 
+        ON f.UNIDAD_TIEMPO_ID = t.ID
+    LEFT JOIN JM_SILVER_PRD_DB.JM_CORE_LEGACY.DIM_PRODUCTOS p 
+        ON f.PRODUCTO_ID = p.ID
+    LEFT JOIN JM_SILVER_PRD_DB.JM_CORE_LEGACY.DIM_ARBOL_CAT ac 
+        ON p.CATEGORIA_ID = ac.ID
+    WHERE t.ANO = YEAR(CURRENT_DATE)
+      AND b.CODIGO_SAP LIKE '3%%'
+    GROUP BY 1,2,3,4,5,6
+    HAVING SUM(f.VALOR_VENTA_OFERTA) <> 0
+    """
+    
+    df = pd.read_sql(query, conn)
+    conn.close()
     return df
 
 df = cargar_datos()
